@@ -1,5 +1,8 @@
-
-telebot
+flask
+requests
 moviepy
 openai
 pydub
+ffmpeg-python
+python-telegram-bot
+whisper
