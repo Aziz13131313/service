@@ -1,9 +1,9 @@
-from moviepy.editor import VideoFileClip
+import moviepy.editor as mp
 import os
 
 def convert_video_to_audio(video_path, audio_path):
     try:
-        video = VideoFileClip(video_path)
+        video = mp.VideoFileClip(video_path)
         audio = video.audio
         audio.write_audiofile(audio_path, logger=None)
         audio.close()
