@@ -1,40 +1,64 @@
-
-import telebot
+from flask import Flask, request
+import requests
 import os
-from convert import convert_video_to_audio
-from whisper_utils import transcribe_audio
-from evaluate import evaluate_script
+from convert import video_to_audio
+from recognize import transcribe_audio
+from evaluate import evaluate_transcript
 
-# Токен Telegram-бота
-TOKEN = "7851015115:AAHj83iRYLsUrGmk8QC36SrrqPik4NOlOpo"
-bot = telebot.TeleBot(TOKEN)
+# Конфигурация из переменных окружения Render
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-@bot.message_handler(content_types=['video', 'document', 'voice', 'audio'])
-def handle_media(message):
-    file_id = message.video.file_id if message.video else message.document.file_id if message.document else message.voice.file_id if message.voice else message.audio.file_id
-    file_info = bot.get_file(file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
+app = Flask(__name__)
 
-    input_ext = file_info.file_path.split('.')[-1]
-    base_filename = f"media_{message.chat.id}"
-    video_path = f"{base_filename}.{input_ext}"
-    audio_path = f"{base_filename}.wav"
+@app.route("/", methods=["POST"])
+def webhook():
+    data = request.get_json()
 
-    with open(video_path, 'wb') as f:
-        f.write(downloaded_file)
+    if "message" not in data:
+        return "ok"
 
-    try:
-        convert_video_to_audio(video_path, audio_path)
+    message = data["message"]
+    chat_id = message["chat"]["id"]
+
+    # Проверка: это видео?
+    if "video" in message:
+        file_id = message["video"]["file_id"]
+        file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
+        file_path = file_info["result"]["file_path"]
+
+        # Скачиваем видео
+        video_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        video_response = requests.get(video_url)
+
+        with open("temp_video.mp4", "wb") as f:
+            f.write(video_response.content)
+
+        # Конвертация видео в аудио
+        audio_path = video_to_audio("temp_video.mp4")
+
+        # Распознавание речи
         transcript = transcribe_audio(audio_path)
-        score, total = evaluate_script(transcript)
 
-        result = f"🧾 Распознанный текст:\n{transcript}\n\n📊 Оценка по 5 столпам:\n"
-        for k, v in score.items():
-            result += f"{k}: {'✅' if v else '❌'}\n"
-        result += f"\n⭐ Общая оценка: {total}/5"
+        # Оценка сервиса
+        result = evaluate_transcript(transcript)
 
-        bot.send_message(message.chat.id, result)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Ошибка обработки: {str(e)}")
+        # Ответ в Telegram
+        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"📊 *Оценка сервиса:*\n{result}",
+            "parse_mode": "Markdown"
+        })
 
-bot.polling()
+    else:
+        # Ответ на не-видео
+        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": "Пожалуйста, отправьте видео с записью общения с клиентом.",
+        })
+
+    return "ok"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
+
