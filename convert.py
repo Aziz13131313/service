@@ -1,9 +1,10 @@
-import moviepy.editor as mp
+from moviepy.editor import VideoFileClip
 import os
 
-def convert_video_to_audio(video_path, audio_path):
+def video_to_audio(video_path):
+    audio_path = "temp_audio.wav"
     try:
-        video = mp.VideoFileClip(video_path)
+        video = VideoFileClip(video_path)
         audio = video.audio
         audio.write_audiofile(audio_path, logger=None)
         audio.close()
@@ -12,3 +13,5 @@ def convert_video_to_audio(video_path, audio_path):
         print(f"Ошибка при конвертации видео в аудио: {e}")
         if os.path.exists(audio_path):
             os.remove(audio_path)
+        return None
+    return audio_path
