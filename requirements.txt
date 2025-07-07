@@ -1,6 +1,6 @@
 flask
 requests
-moviepy
+moviepy==1.0.3
 openai
 pydub
 ffmpeg-python
