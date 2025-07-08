@@ -6,3 +6,5 @@ pydub
 ffmpeg-python
 python-telegram-bot
 whisper
+imageio
+imageio-ffmpeg
