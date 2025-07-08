@@ -1,20 +1,10 @@
-from moviepy.editor import VideoFileClip
-from pydub import AudioSegment
+from moviepy.video.io.VideoFileClip import VideoFileClip
 import os
 
-def convert_video_to_audio(video_path):
-    audio_path = video_path.replace(".mp4", ".mp3")
-    
-    try:
-        video = VideoFileClip(video_path)
-        video.audio.write_audiofile(audio_path, codec='mp3')
-
-        # Дополнительная обработка через pydub (если нужно)
-        sound = AudioSegment.from_file(audio_path)
-        sound.export(audio_path, format="mp3")
-
-    except Exception as e:
-        print(f"Ошибка при конвертации видео: {e}")
-        return None
-    
+def convert_video_to_audio(video_path, output_format="wav"):
+    audio_path = "temp_audio." + output_format
+    video = VideoFileClip(video_path)
+    audio = video.audio
+    audio.write_audiofile(audio_path)
+    video.close()
     return audio_path
