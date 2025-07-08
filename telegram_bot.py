@@ -20,11 +20,17 @@ def webhook():
     message = data["message"]
     chat_id = message["chat"]["id"]
 
+    file_id = None
+
     if "video" in message:
         file_id = message["video"]["file_id"]
+
+    elif "document" in message and message["document"]["mime_type"].startswith("video/"):
+        file_id = message["document"]["file_id"]
+
+    if file_id:
         file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
         file_path = file_info["result"]["file_path"]
-
         video_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
         video_response = requests.get(video_url)
 
@@ -41,7 +47,6 @@ def webhook():
             "text": f"📊 *Оценка сервиса:*\n{result_text}",
             "parse_mode": "Markdown"
         })
-
     else:
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
@@ -52,3 +57,4 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
