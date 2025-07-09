@@ -40,7 +40,7 @@ def webhook():
             with open("temp_video.mp4", "wb") as f:
                 f.write(video_response.content)
 
-            audio_path = convert_video_to_audio("temp_video.mp4")
+            audio_path = convert_video_to_audio("temp_video.mp4", output_format="mp3")
             transcript = transcribe_audio(audio_path)
             evaluation = evaluate_service(transcript)
 
