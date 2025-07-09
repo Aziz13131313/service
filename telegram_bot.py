@@ -20,27 +20,41 @@ def webhook():
     message = data["message"]
     chat_id = message["chat"]["id"]
     file_id = None
+    filename = "temp_file"
 
-    # 👉 Ловим video и document с .mp4
+    # 👉 Ловим video, audio, voice и document с mp4/mp3/wav
     if "video" in message:
         file_id = message["video"]["file_id"]
+        filename += ".mp4"
     elif "document" in message:
-        filename = message["document"].get("file_name", "")
-        if filename.endswith(".mp4"):
+        doc_name = message["document"].get("file_name", "")
+        if doc_name.endswith(".mp4") or doc_name.endswith(".mp3") or doc_name.endswith(".wav"):
             file_id = message["document"]["file_id"]
+            filename += os.path.splitext(doc_name)[-1]
+    elif "audio" in message:
+        file_id = message["audio"]["file_id"]
+        filename += ".mp3"
+    elif "voice" in message:
+        file_id = message["voice"]["file_id"]
+        filename += ".ogg"
 
     if file_id:
         try:
             file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
             file_path = file_info["result"]["file_path"]
 
-            video_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-            video_response = requests.get(video_url)
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+            file_response = requests.get(file_url)
 
-            with open("temp_video.mp4", "wb") as f:
-                f.write(video_response.content)
+            with open(filename, "wb") as f:
+                f.write(file_response.content)
 
-            audio_path = convert_video_to_audio("temp_video.mp4")
+            # 🎯 Если видео — конвертируем, если уже аудио — используем напрямую
+            if filename.endswith(".mp4"):
+                audio_path = convert_video_to_audio(filename)
+            else:
+                audio_path = filename
+
             transcript = transcribe_audio(audio_path)
             evaluation = evaluate_service(transcript)
 
@@ -53,24 +67,18 @@ def webhook():
             })
 
         except Exception as e:
-            # ⚠️ Ошибка в процессе
             requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": f"⚠️ Ошибка при обработке видео: {str(e)}"
+                "text": f"⚠️ Ошибка при обработке: {str(e)}"
             })
 
     else:
-        # 📩 Если нет видео
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
-            "text": "Пожалуйста, отправьте видео с записью общения с клиентом.",
+            "text": "Пожалуйста, отправьте видео или аудио с записью общения с клиентом.",
         })
 
     return "ok"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
-
-
-
