@@ -10,3 +10,4 @@ def transcribe_audio(audio_path):
             file=audio_file
         )
     return transcript.text
+
