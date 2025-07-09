@@ -1,6 +1,8 @@
 import openai
+import os
+import json
 
-client = openai.OpenAI()
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def evaluate_service(transcript: str) -> dict:
     prompt = f"""
@@ -19,14 +21,15 @@ def evaluate_service(transcript: str) -> dict:
 {transcript}
 \"\"\"
 
-Проанализируй и выведи результат в формате словаря Python строго вот так:
+Проанализируй и выведи результат в JSON-формате вот так:
 {{
-    "1. Приветствие": "✅" или "❌",
-    "2. Выявление потребности": "✅" или "❌",
-    "3. Аргументация": "✅" или "❌",
-    "4. Завершение сделки": "✅" или "❌",
-    "5. Прощание": "✅" или "❌"
+    "1. Приветствие": "✅",
+    "2. Выявление потребности": "❌",
+    "3. Аргументация": "✅",
+    "4. Завершение сделки": "❌",
+    "5. Прощание": "✅"
 }}
+Только JSON, ничего лишнего.
 """
 
     response = client.chat.completions.create(
@@ -35,4 +38,17 @@ def evaluate_service(transcript: str) -> dict:
         temperature=0
     )
 
-    return eval(response.choices[0].message.content)
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except Exception as e:
+        return {
+            "1. Приветствие": "❌",
+            "2. Выявление потребности": "❌",
+            "3. Аргументация": "❌",
+            "4. Завершение сделки": "❌",
+            "5. Прощание": "❌",
+            "Ошибка": f"{e}\nGPT ответил:\n{content}"
+        }
+
