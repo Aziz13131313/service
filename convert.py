@@ -1,4 +1,5 @@
-from moviepy.editor import VideoFileClip
+from moviepy.video.io.VideoFileClip import VideoFileClip
+import os
 
 def convert_video_to_audio(video_path, output_format="wav"):
     audio_path = "temp_audio." + output_format
@@ -7,7 +8,3 @@ def convert_video_to_audio(video_path, output_format="wav"):
     audio.write_audiofile(audio_path)
     video.close()
     return audio_path
-
-    return chunk_paths
-
-
