@@ -7,3 +7,4 @@ def convert_video_to_audio(video_path, output_format="mp3"):
     audio.write_audiofile(audio_path, codec='libmp3lame')
     video.close()
     return audio_path
+
