@@ -5,7 +5,7 @@ from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # или пропиши прямо
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 app = Flask(__name__)
@@ -19,30 +19,48 @@ def webhook():
 
     message = data["message"]
     chat_id = message["chat"]["id"]
+    file_id = None
 
+    # 👉 Ловим video и document с .mp4
     if "video" in message:
         file_id = message["video"]["file_id"]
-        file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
-        file_path = file_info["result"]["file_path"]
+    elif "document" in message:
+        filename = message["document"].get("file_name", "")
+        if filename.endswith(".mp4"):
+            file_id = message["document"]["file_id"]
 
-        video_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-        video_response = requests.get(video_url)
+    if file_id:
+        try:
+            file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
+            file_path = file_info["result"]["file_path"]
 
-        with open("temp_video.mp4", "wb") as f:
-            f.write(video_response.content)
+            video_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+            video_response = requests.get(video_url)
 
-        audio_path = convert_video_to_audio("temp_video.mp4")
-        transcript = transcribe_audio(audio_path)
-        evaluation = evaluate_service(transcript)
-        result_text = "\n".join(f"{k}: {v}" for k, v in evaluation.items())
+            with open("temp_video.mp4", "wb") as f:
+                f.write(video_response.content)
 
-        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": f"📊 *Оценка сервиса:*\n{result_text}",
-            "parse_mode": "Markdown"
-        })
+            audio_path = convert_video_to_audio("temp_video.mp4")
+            transcript = transcribe_audio(audio_path)
+            evaluation = evaluate_service(transcript)
+
+            result_text = "\n".join(f"{k}: {v}" for k, v in evaluation.items())
+
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": f"📊 *Оценка сервиса:*\n{result_text}",
+                "parse_mode": "Markdown"
+            })
+
+        except Exception as e:
+            # ⚠️ Ошибка в процессе
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": f"⚠️ Ошибка при обработке видео: {str(e)}"
+            })
 
     else:
+        # 📩 Если нет видео
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
             "text": "Пожалуйста, отправьте видео с записью общения с клиентом.",
@@ -52,6 +70,7 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
 
 
 
