@@ -1,82 +1,112 @@
-from flask import Flask, request
-import requests
+# telegram_bot.py
 import os
+import tempfile
+import requests
+from flask import Flask, request, jsonify
+
 from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN (или TELEGRAM_BOT_TOKEN) не задан в переменных окружения")
+
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+TELEGRAM_FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}"
+
+WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")  # опционально
+PORT = int(os.getenv("PORT", "8080"))
 
 app = Flask(__name__)
 
-@app.route("/", methods=["POST"])
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.post("/")
 def webhook():
-    data = request.get_json()
+    # если используешь секрет Telegram webhook header:
+    if WEBHOOK_SECRET:
+        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            return jsonify({"ok": False, "error": "invalid webhook secret"}), 401
 
-    if "message" not in data:
-        return "ok"
+    data = request.get_json(silent=True) or {}
+    message = data.get("message") or data.get("edited_message") or {}
+    chat = (message.get("chat") or {})
+    chat_id = chat.get("id")
 
-    message = data["message"]
-    chat_id = message["chat"]["id"]
-    file_id = None
-    filename = "temp_file"
+    # Ничего не прислали — подскажем формат
+    if not chat_id:
+        return jsonify({"ok": True})
 
-    # 👉 Ловим video, audio, voice и document с mp4/mp3/wav
-    if "video" in message:
-        file_id = message["video"]["file_id"]
-        filename += ".mp4"
-    elif "document" in message:
-        doc_name = message["document"].get("file_name", "")
-        if doc_name.endswith(".mp4") or doc_name.endswith(".mp3") or doc_name.endswith(".wav"):
-            file_id = message["document"]["file_id"]
-            filename += os.path.splitext(doc_name)[-1]
-    elif "audio" in message:
-        file_id = message["audio"]["file_id"]
-        filename += ".mp3"
-    elif "voice" in message:
-        file_id = message["voice"]["file_id"]
-        filename += ".ogg"
+    try:
+        # 1) Вытащим file_id из видео/голоса/аудио
+        file_id = None
+        file_name = "input"
 
-    if file_id:
-        try:
-            file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
-            file_path = file_info["result"]["file_path"]
+        if "video" in message:
+            file_id = message["video"]["file_id"]
+            file_name = message["video"].get("file_name") or "input.mp4"
+        elif "voice" in message:
+            file_id = message["voice"]["file_id"]
+            file_name = "input.ogg"
+        elif "audio" in message:
+            file_id = message["audio"]["file_id"]
+            file_name = message["audio"].get("file_name") or "input.mp3"
+        else:
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "Пожалуйста, пришлите видео/голос/аудио с диалогом клиента."
+            })
+            return jsonify({"ok": True})
 
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-            file_response = requests.get(file_url)
+        # 2) Узнаём путь к файлу у Telegram
+        r = requests.get(f"{TELEGRAM_API_URL}/getFile", params={"file_id": file_id}, timeout=30)
+        r.raise_for_status()
+        file_path = r.json()["result"]["file_path"]
 
-            with open(filename, "wb") as f:
-                f.write(file_response.content)
+        # 3) Скачиваем во временную папку
+        with tempfile.TemporaryDirectory() as tmpd:
+            src_path = os.path.join(tmpd, os.path.basename(file_path) or file_name)
+            file_url = f"{TELEGRAM_FILE_URL}/{file_path}"
+            fr = requests.get(file_url, timeout=120)
+            fr.raise_for_status()
+            with open(src_path, "wb") as f:
+                f.write(fr.content)
 
-            # 🎯 Если видео — конвертируем, если уже аудио — используем напрямую
-            if filename.endswith(".mp4"):
-                audio_path = convert_video_to_audio(filename)
+            # 4) Если видео — конвертируем в wav, иначе используем как есть
+            lower = src_path.lower()
+            if any(lower.endswith(ext) for ext in (".mp4", ".mov", ".mkv", ".avi", ".webm")):
+                audio_path = convert_video_to_audio(src_path, output_format="wav")
             else:
-                audio_path = filename
+                audio_path = src_path
 
+            # 5) Расшифровка и оценка
             transcript = transcribe_audio(audio_path)
-            evaluation = evaluate_service(transcript)
+            score = evaluate_service(transcript)
 
-            result_text = "\n".join(f"{k}: {v}" for k, v in evaluation.items())
+        # 6) Собираем читаемый ответ
+        lines = [f"📝 Расшифровка (кратко): {transcript[:250]}{'…' if len(transcript) > 250 else ''}",
+                 "📊 Оценка:"]
+        for k, v in score.items():
+            lines.append(f"• {k}: {v}")
 
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": f"📊 *Оценка сервиса:*\n{result_text}",
-                "parse_mode": "Markdown"
-            })
-
-        except Exception as e:
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": f"⚠️ Ошибка при обработке: {str(e)}"
-            })
-
-    else:
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
-            "text": "Пожалуйста, отправьте видео или аудио с записью общения с клиентом.",
+            "text": "\n".join(lines)
         })
+
+    except Exception as e:
+        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"⚠️ Ошибка: {e}"
+        })
+
+    return jsonify({"ok": True})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
 
     return "ok"
 
