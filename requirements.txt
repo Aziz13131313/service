@@ -8,3 +8,4 @@ python-telegram-bot
 whisper
 imageio
 imageio-ffmpeg
+gunicorn==22.0.0
