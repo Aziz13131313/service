@@ -1,6 +1,8 @@
 from flask import Flask, request
 import requests
 import os
+from threading import Thread
+
 from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
@@ -10,14 +12,11 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 app = Flask(__name__)
 
-@app.route("/", methods=["POST"])
-def webhook():
-    data = request.get_json()
+# Храним идентификаторы уже обработанных обновлений
+processed_updates: set[int] = set()
 
-    if "message" not in data:
-        return "ok"
 
-    message = data["message"]
+def handle_update(message: dict, update_id: int | None) -> None:
     chat_id = message["chat"]["id"]
     file_id = None
     filename = "temp_file"
@@ -63,13 +62,16 @@ def webhook():
             requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id,
                 "text": f"📊 *Оценка сервиса:*\n{result_text}",
-                "parse_mode": "Markdown"
+                "parse_mode": "Markdown",
             })
+
+            if update_id is not None:
+                processed_updates.add(update_id)
 
         except Exception as e:
             requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": f"⚠️ Ошибка при обработке: {str(e)}"
+                "text": f"⚠️ Ошибка при обработке: {str(e)}",
             })
 
     else:
@@ -78,7 +80,27 @@ def webhook():
             "text": "Пожалуйста, отправьте видео или аудио с записью общения с клиентом.",
         })
 
+        if update_id is not None:
+            processed_updates.add(update_id)
+
+
+@app.route("/", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    update_id = data.get("update_id")
+
+    if update_id is not None and update_id in processed_updates:
+        return "ok"
+
+    if "message" not in data:
+        return "ok"
+
+    message = data["message"]
+    Thread(target=handle_update, args=(message, update_id)).start()
+
     return "ok"
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
