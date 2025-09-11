@@ -39,6 +39,7 @@ def webhook():
         filename += ".ogg"
 
     if file_id:
+        audio_path = None
         try:
             file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
             file_path = file_info["result"]["file_path"]
@@ -52,10 +53,12 @@ def webhook():
             # 🎯 Если видео — конвертируем, если уже аудио — используем напрямую
             if filename.endswith(".mp4"):
                 audio_path = convert_video_to_audio(filename)
+                os.remove(filename)
             else:
                 audio_path = filename
 
             transcript = transcribe_audio(audio_path)
+            os.remove(audio_path)
             evaluation = evaluate_service(transcript)
 
             result_text = "\n".join(f"{k}: {v}" for k, v in evaluation.items())
@@ -71,6 +74,12 @@ def webhook():
                 "chat_id": chat_id,
                 "text": f"⚠️ Ошибка при обработке: {str(e)}"
             })
+        finally:
+            for path in set(filter(None, [filename, audio_path])):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     else:
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
