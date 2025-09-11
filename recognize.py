@@ -1,10 +1,11 @@
-# recognize.py
-import os
-from openai import OpenAI
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-def transcribe_audio(audio_path: str) -> str:
-    with open(audio_path, "rb") as f:
-        tr = client.audio.transcriptions.create(model="whisper-1", file=f)
-    return tr.text
+flask==3.0.3
+gunicorn==22.0.0
+requests==2.32.3
+moviepy==2.1.1
+openai==1.43.0
+pydub==0.25.1
+ffmpeg-python==0.2.0
+imageio==2.35.1
+imageio-ffmpeg==0.5.1
+# python-telegram-bot — не требуется, мы работаем через Webhook API
+# whisper — не требуется, используем OpenAI Whisper API
