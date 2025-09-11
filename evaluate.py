@@ -39,9 +39,3 @@ def evaluate_service(transcript: str) -> dict:
         "Презентация договора": presentation,
         "Прощание и отработка на возврат": farewell_score
     }
-
-
-            "Презентация договора": 0,
-            "Прощание и отработка на возврат": 0,
-            "Ошибка": f"{e}\\nGPT ответил:\\n{content}"
-        }
