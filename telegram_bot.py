@@ -1,7 +1,7 @@
 from flask import Flask, request
 import requests
 import os
-from convert import convert_video_to_audio
+from convert import convert_video_to_audio, convert_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
 
@@ -49,9 +49,12 @@ def webhook():
             with open(filename, "wb") as f:
                 f.write(file_response.content)
 
-            # 🎯 Если видео — конвертируем, если уже аудио — используем напрямую
+            # 🎯 Если видео — конвертируем, если voice — в wav, иначе используем напрямую
             if filename.endswith(".mp4"):
                 audio_path = convert_video_to_audio(filename)
+            elif filename.endswith(".ogg"):
+                audio_path = convert_audio(filename)
+                os.remove(filename)
             else:
                 audio_path = filename
 
