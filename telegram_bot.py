@@ -58,6 +58,15 @@ def webhook():
             transcript = transcribe_audio(audio_path)
             evaluation = evaluate_service(transcript)
 
+            try:
+                os.remove(filename)
+            except OSError:
+                pass
+            try:
+                os.remove(audio_path)
+            except OSError:
+                pass
+
             result_text = "\n".join(f"{k}: {v}" for k, v in evaluation.items())
 
             requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
