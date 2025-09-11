@@ -1,6 +1,7 @@
 from flask import Flask, request
 import requests
 import os
+import uuid
 from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
@@ -20,23 +21,24 @@ def webhook():
     message = data["message"]
     chat_id = message["chat"]["id"]
     file_id = None
-    filename = "temp_file"
+    base_filename = str(uuid.uuid4())
+    filename = base_filename
 
     # 👉 Ловим video, audio, voice и document с mp4/mp3/wav
     if "video" in message:
         file_id = message["video"]["file_id"]
-        filename += ".mp4"
+        filename = f"{base_filename}.mp4"
     elif "document" in message:
         doc_name = message["document"].get("file_name", "")
         if doc_name.endswith(".mp4") or doc_name.endswith(".mp3") or doc_name.endswith(".wav"):
             file_id = message["document"]["file_id"]
-            filename += os.path.splitext(doc_name)[-1]
+            filename = f"{base_filename}{os.path.splitext(doc_name)[-1]}"
     elif "audio" in message:
         file_id = message["audio"]["file_id"]
-        filename += ".mp3"
+        filename = f"{base_filename}.mp3"
     elif "voice" in message:
         file_id = message["voice"]["file_id"]
-        filename += ".ogg"
+        filename = f"{base_filename}.ogg"
 
     if file_id:
         try:
