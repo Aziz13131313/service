@@ -1,11 +1,15 @@
 from flask import Flask, request
 import requests
+import logging
 import os
 from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    logging.error("Environment variable TELEGRAM_TOKEN is not set")
+    raise RuntimeError("TELEGRAM_TOKEN environment variable is required")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 app = Flask(__name__)
