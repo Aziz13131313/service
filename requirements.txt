@@ -9,3 +9,5 @@ whisper
 imageio
 imageio-ffmpeg
 gunicorn==22.0.0
+gspread==6.1.4
+google-auth==2.34.0
