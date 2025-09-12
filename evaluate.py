@@ -3,35 +3,41 @@ import re
 
 def evaluate_service(transcript: str) -> dict:
     """
-    Черновая оценка по 4 пунктам (0/50/100 и т.д.).
+    Оценка по твоим критериям.
+    ВАЖНО: колонка "Приветствие и представление" = 0/50/100.
+    Параллельно считаем "Приветствие" (0/50) и "Представление" (0/50) — если в листе есть такие столбцы, тоже заполним.
     """
-    text = transcript.lower()
+    text = (transcript or "").lower()
 
-    # 1) Приветствие и представление
-    greeting_score = 0
-    if re.search(r"\b(здравствуй|здравствуйте|привет|добрый день|добрый вечер|доброе утро|салам)\b", text):
-        greeting_score += 50
-    if re.search(r"\bменя зовут|это (.+?) на линии|вас приветствует\b", text):
-        greeting_score += 50
+    # --- Приветствие / Представление ---
+    greet = 50 if re.search(r"\b(здравствуй|здравствуйте|привет|добрый\s+(день|вечер|утро))\b", text) else 0
+    intro = 50 if re.search(r"\b(меня\s+зовут|это\s+[\w\-]+|на\s+связи|вас\s+приветствует)\b", text) else 0
+    greet_intro_total = greet + intro   # 0/50/100
 
-    # 2) Опрос (35/30/35) — был ли ранее, спросил имя, цель (залог/скупка)
-    was_here = 35 if re.search(r"\bвы уже были|ранее обращались\b", text) else 0
-    ask_name = 30 if re.search(r"\bкак к вам обращаться|ваше имя\b", text) else 0
-    intent   = 35 if re.search(r"\bзалог|скупк[аи]\b", text) else 0
+    # --- Опрос (35/30/35) ---
+    was_here = 35 if re.search(r"\b(вы\s+уже\s+были|ранее\s+обращались)\b", text) else 0
+    ask_name = 30 if re.search(r"\b(как\s+к\s+вам\s+обращаться|ваше\s+имя)\b", text) else 0
+    intent   = 35 if re.search(r"\b(залог|скупк[аи])\b", text) else 0
+    survey = f"{was_here}/{ask_name}/{intent}"
 
-    # 3) Презентация договора
-    presentation = 100 if re.search(r"\bдоговор|условия\s+договора|пункты\s+договора\b", text) else 0
+    # --- Презентация договора ---
+    contract = 100 if re.search(r"\b(договор|условия\s+договора|пункты\s+договора)\b", text) else 0
 
-    # 4) Прощание + возврат
-    farewell_score = 0
-    if re.search(r"\bспасибо|благодарю\b", text):
-        farewell_score += 50
-    if re.search(r"\bждём вас|заходите ещё|будем рады\b", text):
-        farewell_score += 50
+    # --- Прощание + возврат ---
+    thanks = 50 if re.search(r"\b(спасибо|благодарю)\b", text) else 0
+    return_back = 50 if re.search(r"\b(жд[её]м\s+вас|заходите\s+ещ[её]|будем\s+рады)\b", text) else 0
+    farewell = thanks + return_back   # 0/50/100
 
     return {
-        "Приветствие и представление": greeting_score,
-        "Опрос": f"{was_here}/{ask_name}/{intent}",
-        "Презентация договора": presentation,
-        "Прощание и отработка на возврат": farewell_score,
+        # суммарная колонка (именно её ты хочешь видеть как одну)
+        "Приветствие и представление": greet_intro_total,
+
+        # опционально — если есть отдельные столбцы, тоже заполним
+        "Приветствие": greet,            # 0/50
+        "Представление": intro,          # 0/50
+
+        # как в твоей таблице
+        "Опрос": survey,                 # "35/30/35"
+        "Презентация договора": contract,               # 0/100
+        "Прощание и отработка на возврат": farewell,    # 0/100
     }
