@@ -1,15 +1,16 @@
-# telegram_bot.py (DEBUG версия)
+# telegram_bot.py
 import os
-import json
 import tempfile
 import requests
 from flask import Flask, request, jsonify
 
+# ваши модули (оставляю как есть)
 from convert import convert_video_to_audio
 from recognize import transcribe_audio
 from evaluate import evaluate_service
-from sheets import append_row  # если не настроено — просто пропустит запись
+from sheets import append_row  # если пока не используете — можно временно закомментить
 
+# --- Конфиг ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN (или TELEGRAM_BOT_TOKEN) не задан")
@@ -20,150 +21,140 @@ TELEGRAM_FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}"
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 PORT = int(os.getenv("PORT", "8080"))
 
+# --- Flask ---
 app = Flask(__name__)
 
-@app.get("/")
-def index():
-    return jsonify({"ok": True, "hint": "POST / for Telegram webhook, /health for Render"})
+# --- Вспомогалки ---
+
+def tg_send_text(chat_id: int, text: str):
+    try:
+        requests.post(f"{TELEGRAM_API_URL}/sendMessage",
+                      json={"chat_id": chat_id, "text": text},
+                      timeout=20)
+    except Exception:
+        pass  # не роняем вебхук из-за ответа пользователю
+
+def tg_get_file_path(file_id: str) -> str:
+    """
+    Шаг 1: /getFile -> вернуть file_path (может бросить HTTPError)
+    """
+    r = requests.get(f"{TELEGRAM_API_URL}/getFile",
+                     params={"file_id": file_id},
+                     timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok") or "result" not in data or "file_path" not in data["result"]:
+        raise RuntimeError(f"Telegram getFile вернул неожиданный ответ: {data}")
+    return data["result"]["file_path"]
+
+def tg_download_by_path(file_path: str, dst_path: str):
+    """
+    Шаг 2: /file/bot<token>/<file_path> -> скачать в dst_path
+    """
+    url = f"{TELEGRAM_FILE_URL}/{file_path}"
+    with requests.get(url, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(dst_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+def pick_media(message: dict):
+    """
+    Возвращает (file_id, suggested_name) из message для типов: video, voice, audio, document (медиа).
+    Если ничего нет — (None, None).
+    """
+    if "video" in message:
+        v = message["video"]
+        return v["file_id"], v.get("file_name") or "input.mp4"
+    if "voice" in message:
+        v = message["voice"]
+        return v["file_id"], "input.ogg"
+    if "audio" in message:
+        a = message["audio"]
+        return a["file_id"], a.get("file_name") or "input.mp3"
+    # иногда камеры присылают файл как document (mp4/ogg)
+    if "document" in message:
+        d = message["document"]
+        mime = (d.get("mime_type") or "").lower()
+        name = d.get("file_name") or "input.bin"
+        if any(x in mime for x in ("video", "audio", "ogg", "mp4", "mpeg", "x-matroska")) or \
+           name.lower().endswith((".mp4", ".mov", ".mkv", ".avi", ".webm", ".ogg", ".oga", ".mp3", ".wav")):
+            return d["file_id"], name
+    return None, None
+
+# --- Роуты ---
 
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
 
-@app.get("/healthz")
-def healthz():
-    return jsonify({"ok": True})
-
-def download_by_file_id(file_id: str, fallback_name: str) -> str:
-    """Скачиваем файл по file_id → возвращаем локальный путь."""
-    try:
-        r = requests.get(f"{TELEGRAM_API_URL}/getFile", params={"file_id": file_id}, timeout=30)
-        # Диагностика: печатаем, если не ок
-        if r.status_code != 200:
-            print(f"[GETFILE] status={r.status_code} body={r.text}")
-            r.raise_for_status()
-        res = r.json()
-        file_path = res["result"]["file_path"]
-        url = f"{TELEGRAM_FILE_URL}/{file_path}"
-        print(f"[GETFILE] OK path={file_path}")
-
-        # Скачиваем контент во временный файл
-        fr = requests.get(url, timeout=180)
-        if fr.status_code != 200:
-            print(f"[FILE-DOWNLOAD] status={fr.status_code} body={fr.text}")
-            fr.raise_for_status()
-
-        fd, stable_path = tempfile.mkstemp(suffix="_" + (os.path.basename(file_path) or fallback_name))
-        os.close(fd)
-        with open(stable_path, "wb") as f:
-            f.write(fr.content)
-        return stable_path
-    except Exception as e:
-        print(f"[GETFILE][EXC] {e}")
-        raise
-
-def pick_media_and_name(message: dict):
-    """
-    Возвращаем (file_id, file_name, media_type) для поддерживаемых типов.
-    """
-    # video
-    if "video" in message:
-        v = message["video"]
-        return v["file_id"], v.get("file_name") or "input.mp4", "video"
-    # кругляш
-    if "video_note" in message:
-        v = message["video_note"]
-        return v["file_id"], "input.mp4", "video"
-    # voice
-    if "voice" in message:
-        v = message["voice"]
-        return v["file_id"], "input.ogg", "voice"
-    # audio
-    if "audio" in message:
-        v = message["audio"]
-        return v["file_id"], v.get("file_name") or "input.mp3", "audio"
-    # документы (могут быть видео/аудио в виде документа)
-    if "document" in message:
-        d = message["document"]
-        return d["file_id"], d.get("file_name") or "input.bin", "document"
-    # gif/анимация
-    if "animation" in message:
-        a = message["animation"]
-        return a["file_id"], a.get("file_name") or "input.mp4", "animation"
-    return None, None, None
-
 @app.post("/")
 def webhook():
+    # защитный секрет для вебхука
     if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
         return jsonify({"ok": False, "error": "invalid webhook secret"}), 401
 
-    data = request.get_json(silent=True) or {}
-    # Логируем полный апдейт (убедись, что секретов тут нет)
-    try:
-        print("[TG UPDATE]", json.dumps(data, ensure_ascii=False))
-    except Exception as _:
-        print("[TG UPDATE] <unserializable>")
-
-    message = data.get("message") or data.get("edited_message") or {}
-    chat = (message.get("chat") or {})
+    update = request.get_json(silent=True) or {}
+    message = update.get("message") or update.get("edited_message") or {}
+    chat = message.get("chat") or {}
     chat_id = chat.get("id")
     if not chat_id:
         return jsonify({"ok": True})
 
+    file_id, file_name = pick_media(message)
+    if not file_id:
+        tg_send_text(chat_id, "Пришлите видео/голос/аудио с диалогом.")
+        return jsonify({"ok": True})
+
     try:
-        file_id, file_name, media_type = pick_media_and_name(message)
-        if not file_id:
-            # Подсказываем, какие типы ждём
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": "Пришлите видео/голос/аудио/документ (видео или аудио файлом)."
-            })
-            return jsonify({"ok": True})
+        # 1) получаем file_path (ВАЖНО: сначала getFile, потом скачиваем)
+        file_path = tg_get_file_path(file_id)
 
-        # Скачиваем файл
-        src_path = download_by_file_id(file_id, file_name)
+        # 2) скачиваем во временный файл
+        with tempfile.TemporaryDirectory() as tmpd:
+            src_path = os.path.join(tmpd, os.path.basename(file_path) or file_name)
+            tg_download_by_path(file_path, src_path)
 
-        # Если это видео — конвертируем в WAV, иначе используем как есть
-        lower = src_path.lower()
-        if lower.endswith((".mp4", ".mov", ".mkv", ".avi", ".webm")) or media_type in ("video", "animation"):
-            audio_path = convert_video_to_audio(src_path, output_format="wav")
-        else:
-            audio_path = src_path
+            # 3) если это видео — конвертим в WAV, иначе используем как есть
+            lower = src_path.lower()
+            if lower.endswith((".mp4", ".mov", ".mkv", ".avi", ".webm")):
+                audio_path = convert_video_to_audio(src_path, output_format="wav")
+            else:
+                audio_path = src_path
 
-        # Расшифровка и оценка
-        transcript = transcribe_audio(audio_path)
-        score = evaluate_service(transcript)
+            # 4) распознаём и оцениваем
+            transcript = transcribe_audio(audio_path)
+            score = evaluate_service(transcript)
 
-        # Пишем в Google Sheet (если настроено)
-        extra = {
-            "Сессия": str(message.get("message_id", "")),
-            "Файл": file_name,
-        }
-        try:
-            append_row(score, transcript, extra)
-        except Exception as e:
-            print(f"[GSHEET] append error: {e}")
-
-        # Ответ в чат
+        # 5) отправляем краткий ответ в чат
+        head = transcript[:250]
+        dots = "…" if len(transcript) > 250 else ""
         lines = [
-            f"📝 Расшифровка (кратко): {transcript[:250]}{'…' if len(transcript) > 250 else ''}",
-            "📊 Оценка:",
+            f"📝 Расшифровка (кратко): {head}{dots}",
+            "📊 Оценка:"
         ]
         for k, v in score.items():
             lines.append(f"• {k}: {v}")
+        tg_send_text(chat_id, "\n".join(lines))
 
-        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-            "chat_id": chat_id, "text": "\n".join(lines)
-        })
+        # 6) опционально — пишем в Google Sheet
+        try:
+            # Пример: append_row(transcript, score, chat_id, message.get("date"))
+            append_row(transcript, score, chat_id, message.get("date"))
+        except Exception as e_sheet:
+            # не валим основной поток из-за таблицы
+            tg_send_text(chat_id, f"ℹ️ Данные оценок будут записаны позже (таблица недоступна: {e_sheet})")
 
+    except requests.HTTPError as http_err:
+        # Показываем, ГДЕ именно была ошибка — это помогает диагностике
+        tg_send_text(chat_id, f"⚠️ HTTP ошибка при работе с Telegram API: {http_err}")
     except Exception as e:
-        # Печатаем исключение в логи и сообщаем в чат
-        print(f"[WEBHOOK][EXC] {e}")
-        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-            "chat_id": chat_id, "text": f"⚠️ Ошибка: {e}"
-        })
+        tg_send_text(chat_id, f"⚠️ Ошибка: {e}")
 
     return jsonify({"ok": True})
 
 if __name__ == "__main__":
+    # На Render лучше запускать через gunicorn, но локально можно так:
     app.run(host="0.0.0.0", port=PORT)
+
