@@ -1,43 +1,66 @@
 # evaluate.py
-import re
+import json
+import os
+from typing import Any, Dict
 
-def evaluate_service(transcript: str) -> dict:
-    """
-    Оценка по твоим критериям.
-    ВАЖНО: колонка "Приветствие и представление" = 0/50/100.
-    Параллельно считаем "Приветствие" (0/50) и "Представление" (0/50) — если в листе есть такие столбцы, тоже заполним.
-    """
-    text = (transcript or "").lower()
+from openai import OpenAI
 
-    # --- Приветствие / Представление ---
-    greet = 50 if re.search(r"\b(здравствуй|здравствуйте|привет|добрый\s+(день|вечер|утро))\b", text) else 0
-    intro = 50 if re.search(r"\b(меня\s+зовут|это\s+[\w\-]+|на\s+связи|вас\s+приветствует)\b", text) else 0
-    greet_intro_total = greet + intro   # 0/50/100
 
-    # --- Опрос (35/30/35) ---
-    was_here = 35 if re.search(r"\b(вы\s+уже\s+были|ранее\s+обращались)\b", text) else 0
-    ask_name = 30 if re.search(r"\b(как\s+к\s+вам\s+обращаться|ваше\s+имя)\b", text) else 0
-    intent   = 35 if re.search(r"\b(залог|скупк[аи])\b", text) else 0
-    survey = f"{was_here}/{ask_name}/{intent}"
-
-    # --- Презентация договора ---
-    contract = 100 if re.search(r"\b(договор|условия\s+договора|пункты\s+договора)\b", text) else 0
-
-    # --- Прощание + возврат ---
-    thanks = 50 if re.search(r"\b(спасибо|благодарю)\b", text) else 0
-    return_back = 50 if re.search(r"\b(жд[её]м\s+вас|заходите\s+ещ[её]|будем\s+рады)\b", text) else 0
-    farewell = thanks + return_back   # 0/50/100
-
+def _zero_result() -> Dict[str, Any]:
     return {
-        # суммарная колонка (именно её ты хочешь видеть как одну)
-        "Приветствие и представление": greet_intro_total,
-
-        # опционально — если есть отдельные столбцы, тоже заполним
-        "Приветствие": greet,            # 0/50
-        "Представление": intro,          # 0/50
-
-        # как в твоей таблице
-        "Опрос": survey,                 # "35/30/35"
-        "Презентация договора": contract,               # 0/100
-        "Прощание и отработка на возврат": farewell,    # 0/100
+        "Приветствие и представление": 0,
+        "Приветствие": 0,
+        "Представление": 0,
+        "Опрос": "0/0/0",
+        "Презентация договора": 0,
+        "Прощание и отработка на возврат": 0,
     }
+
+
+def evaluate_service(transcript: str) -> Dict[str, Any]:
+    """
+    Семантическая оценка разговора по четырём шагам сервиса через OpenAI.
+
+    Возвращает словарь со значениями колонок Google Sheets. При ошибке все поля
+    заполняются нулями и добавляется поле "Ошибка" с текстом исключения.
+    """
+    base = _zero_result()
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY не задан в переменных окружения")
+
+        client = OpenAI(api_key=api_key)
+
+        system_prompt = (
+            "Ты оцениваешь качество обслуживания по четырём пунктам. "
+            "Верни JSON с ключами: 'Приветствие и представление' (0,50,100), "
+            "'Приветствие' (0 или 50), 'Представление' (0 или 50), "
+            "'Опрос' (строка вида '35/30/35', где каждое значение либо указанное, либо 0), "
+            "'Презентация договора' (0 или 100), 'Прощание и отработка на возврат' (0,50,100). "
+            "Никаких пояснений не добавляй."
+        )
+
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": transcript or ""},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        data = json.loads(resp.output_text)
+
+        result = {
+            "Приветствие и представление": int(data.get("Приветствие и представление", 0)),
+            "Приветствие": int(data.get("Приветствие", 0)),
+            "Представление": int(data.get("Представление", 0)),
+            "Опрос": data.get("Опрос", "0/0/0"),
+            "Презентация договора": int(data.get("Презентация договора", 0)),
+            "Прощание и отработка на возврат": int(data.get("Прощание и отработка на возврат", 0)),
+        }
+        return result
+    except Exception as e:  # noqa: BLE001
+        base["Ошибка"] = str(e)
+        return base
