@@ -3,23 +3,8 @@ import json
 import os
 import re
 from typing import Any, Dict
-
 from openai import OpenAI
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-SYSTEM = (
-    "Ты оцениваешь качество обслуживания по правилам:\n"
-    "- 'Приветствие' только 0 или 50.\n"
-    "- 'Представление' только 0 или 50.\n"
-    "- 'Приветствие и представление' = сумма двух (0/50/100).\n"
-    "- 'Опрос' — строка 'X/Y/Z' (каждое — целое 0..100; если нет данных, 0).\n"
-    "- 'Презентация договора' только 0, 50 или 100.\n"
-    "- 'Прощание и отработка на возврат' только 0, 50 или 100.\n"
-    "Верни строго JSON-объект без комментариев и текста вокруг с ключами:\n"
-    "  'Приветствие и представление', 'Приветствие', 'Представление',\n"
-    "  'Опрос', 'Презентация договора', 'Прощание и отработка на возврат'."
-)
 
 def _zero_result() -> Dict[str, Any]:
     return {
@@ -31,77 +16,96 @@ def _zero_result() -> Dict[str, Any]:
         "Прощание и отработка на возврат": 0,
     }
 
-def _clamp_to(values: set[int], x: Any, default: int) -> int:
-    try:
-        xi = int(x)
-        return xi if xi in values else default
-    except Exception:
-        return default
 
-def _parse_poll(s: Any) -> str:
-    """Ожидаем строку 'x/y/z'. Любые сбои -> '0/0/0'."""
-    if not isinstance(s, str):
-        return "0/0/0"
-    m = re.findall(r"-?\d+", s)
-    if len(m) >= 3:
-        try:
-            a, b, c = (max(0, int(m[0])), max(0, int(m[1])), max(0, int(m[2])))
-            return f"{a}/{b}/{c}"
-        except Exception:
-            pass
-    return "0/0/0"
+# --- Жёсткое правило для «Опрос: 35/30/35» ---
+def _has_any(text: str, patterns: list[str]) -> bool:
+    return any(re.search(p, text, flags=re.I) for p in patterns)
+
+def _score_opros(transcript: str) -> str:
+    t = (transcript or "").lower()
+
+    # 1) Бывал ли ранее? (35)
+    was_before = _has_any(t, [
+        r"\bбывал[аи]?\s+раньше\b", r"\bбыли\s+раньше\b",
+        r"\bприходил[аи]?\s+раньше\b", r"\bу\s+нас\s+раньше\b",
+        r"\bранее\s+были\b",
+    ])
+    s1 = 35 if was_before else 0
+
+    # 2) Залог или скупка? (30)
+    # Варианты формулировок: «залог или скупка / выкуп / займ» и т.п.
+    pledge_or_buy = _has_any(t, [
+        r"\bзалог\s+или\s+скупк", r"\bзалог\s+или\s+выкуп",
+        r"\bскупк[ау]\b", r"\bвам\s+залог\s+или\s+выкуп\b",
+        r"\bпод\s+залог\b", r"\bзайм\b",
+        r"\bскупаете\b", r"\bпокупаем\b",
+    ])
+    s2 = 30 if pledge_or_buy else 0
+
+    # 3) Уточнил имя? (35)
+    ask_name = _has_any(t, [
+        r"\bкак\s+к\s+вам\s+обращаться\b",
+        r"\bкак\s+вас\s+зовут\b",
+        r"\bваше\s+имя\b",
+        r"\bкак\s+могу\s+к\s+вам\s+обращаться\b",
+        r"\bимя\s+ваше\b",
+    ])
+    s3 = 35 if ask_name else 0
+
+    return f"{s1}/{s2}/{s3}"
+
 
 def evaluate_service(transcript: str) -> Dict[str, Any]:
     """
-    Возвращает словарь со значениями колонок. При любой ошибке — нули + поле 'Ошибка'.
+    Оцениваем разговор. «Опрос» считаем детерминированно (35/30/35),
+    остальное — через модель OpenAI. При ошибке вернём нули,
+    но «Опрос» оставим по нашему правилу.
     """
     base = _zero_result()
+    base["Опрос"] = _score_opros(transcript)
+
     try:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY не задан")
+            raise RuntimeError("OPENAI_API_KEY не задан в переменных окружения")
 
         client = OpenAI(api_key=api_key)
 
-        resp = client.chat.completions.create(
-            model=MODEL,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": f"Расшифровка диалога:\n{transcript or ''}\n\nВерни только JSON."},
-            ],
+        system_prompt = (
+            "Ты оцениваешь качество обслуживания. Верни JSON со строго такими ключами: "
+            "'Приветствие и представление' (0, 50 или 100), "
+            "'Приветствие' (0 или 50), "
+            "'Представление' (0 или 50), "
+            # ВАЖНО: «Опрос» мы считаем в коде, поэтому здесь просим вернуть заглушку.
+            "'Опрос' — верни строку 'DONT_CARE', "
+            "'Презентация договора' (0 или 100), "
+            "'Прощание и отработка на возврат' (0, 50 или 100). "
+            "Никаких пояснений не добавляй."
         )
-        content = resp.choices[0].message.content
-        data = json.loads(content)
 
-        # Нормализация значений под жёсткие правила
-        greet = _clamp_to({0, 50}, data.get("Приветствие"), 0)
-        intro = _clamp_to({0, 50}, data.get("Представление"), 0)
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": transcript or ""},
+            ],
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.output_text)
 
-        total = data.get("Приветствие и представление")
-        # если модель дала мусор — пересчитаем как сумму
-        try:
-            total = int(total)
-        except Exception:
-            total = greet + intro
-        # принудительно приводим к 0/50/100 на основе суммы
-        total = 100 if greet + intro >= 100 else 50 if greet + intro >= 50 else 0
-
-        contract = _clamp_to({0, 50, 100}, data.get("Презентация договора"), 0)
-        bye     = _clamp_to({0, 50, 100}, data.get("Прощание и отработка на возврат"), 0)
-        poll    = _parse_poll(data.get("Опрос"))
-
-        return {
-            "Приветствие и представление": total,
-            "Приветствие": greet,
-            "Представление": intro,
-            "Опрос": poll,
-            "Презентация договора": contract,
-            "Прощание и отработка на возврат": bye,
+        result = {
+            "Приветствие и представление": int(data.get("Приветствие и представление", 0)),
+            "Приветствие": int(data.get("Приветствие", 0)),
+            "Представление": int(data.get("Представление", 0)),
+            # Перезаписываем «Опрос» по правилу 35/30/35.
+            "Опрос": _score_opros(transcript),
+            "Презентация договора": int(data.get("Презентация договора", 0)),
+            "Прощание и отработка на возврат": int(data.get("Прощание и отработка на возврат", 0)),
         }
+        return result
 
     except Exception as e:
         base["Ошибка"] = str(e)
         return base
+
 
