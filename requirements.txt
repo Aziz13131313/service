@@ -1,13 +1,6 @@
-flask
-requests
-moviepy>=2.2.1
-openai
-pydub
-ffmpeg-python
-python-telegram-bot
-whisper
-imageio
-imageio-ffmpeg
+flask==3.1.2
+requests>=2.32.3
+openai>=1.107.3
 gunicorn==22.0.0
 gspread==6.1.4
 google-auth==2.34.0
