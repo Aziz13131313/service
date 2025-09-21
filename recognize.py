@@ -56,15 +56,12 @@ def _run_ffmpeg_to_wav(in_bytes: bytes, in_mime: str) -> bytes:
 
     return data
 
-
-def ensure_wav(data: bytes, mime: Optional[str]) -> bytes:
-    """
-    Если уже WAV/PCM — вернём как есть, иначе перегоняем через ffmpeg.
-    """
+def ensure_wav(data: bytes, mime: Optional[str] = None) -> bytes:
     mime = (mime or "").lower()
     if mime in ("audio/wav", "audio/x-wav", "audio/wave"):
         return data
     return _run_ffmpeg_to_wav(data, mime)
+
 
 
 def _transcribe_wav_core(wav_bytes: bytes, language: Optional[str]) -> Tuple[str, str]:
