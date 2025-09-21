@@ -2,6 +2,7 @@
 import os
 import json
 import tempfile
+import mimetypes
 import requests
 from flask import Flask, request, jsonify
 
@@ -11,7 +12,6 @@ from evaluate import evaluate_service
 try:
     from sheets import append_row
 except Exception:
-    # если sheets пока не настроен — просто заглушка
     def append_row(*args, **kwargs):
         return None
 
@@ -39,8 +39,7 @@ def tg_send_text(chat_id: int | str, text: str):
             timeout=20,
         )
     except Exception:
-        # не валим вебхук, если ответить пользователю не получилось
-        pass
+        pass  # не валим вебхук, если отправка не удалась
 
 def tg_get_file_path(file_id: str) -> str:
     r = requests.get(
@@ -63,35 +62,74 @@ def tg_download_by_path(file_path: str, dst_path: str):
                 if chunk:
                     f.write(chunk)
 
+def guess_mime_from_name(name: str) -> str | None:
+    # расширенные догадки, т.к. у телеграма часто пустой mime
+    n = (name or "").lower()
+    if n.endswith(".ogg") or n.endswith(".oga"):
+        return "audio/ogg"
+    if n.endswith(".mp3"):
+        return "audio/mpeg"
+    if n.endswith(".wav"):
+        return "audio/wav"
+    if n.endswith(".m4a"):
+        return "audio/mp4"
+    if n.endswith(".mp4"):
+        return "video/mp4"
+    if n.endswith(".webm"):
+        return "video/webm"
+    if n.endswith(".mov"):
+        return "video/quicktime"
+    if n.endswith(".mkv"):
+        return "video/x-matroska"
+    if n.endswith(".avi"):
+        return "video/x-msvideo"
+    return (mimetypes.guess_type(n)[0])  # может вернуть None
+
 def pick_media(message: dict):
     """
-    Возвращает (file_id, suggested_name) из message для типов:
+    Возвращает (file_id, suggested_name, mime_hint) из message для:
     video, video_note, voice, audio, document (если это медиа), animation.
-    Если ничего нет — (None, None).
+    Если ничего нет — (None, None, None).
     """
+    # video
     if "video" in message:
         v = message["video"]
-        return v["file_id"], v.get("file_name") or "input.mp4"
+        name = v.get("file_name") or "input.mp4"
+        return v["file_id"], name, "video/mp4"
+
+    # video_note (кружок)
     if "video_note" in message:
         v = message["video_note"]
-        return v["file_id"], "input.mp4"
+        return v["file_id"], "input.mp4", "video/mp4"
+
+    # voice (голосовое ogg/opus)
     if "voice" in message:
         v = message["voice"]
-        return v["file_id"], "input.ogg"
+        return v["file_id"], "input.ogg", "audio/ogg"
+
+    # audio (музыка/запись)
     if "audio" in message:
         a = message["audio"]
-        return a["file_id"], a.get("file_name") or "input.mp3"
+        name = a.get("file_name") or "input.mp3"
+        mime = (a.get("mime_type") or guess_mime_from_name(name) or "audio/mpeg")
+        return a["file_id"], name, mime
+
+    # document (часто сюда падают m4a/mp4/ogg)
     if "document" in message:
         d = message["document"]
-        mime = (d.get("mime_type") or "").lower()
         name = d.get("file_name") or "input.bin"
-        if any(x in mime for x in ("video", "audio", "ogg", "mp4", "mpeg", "x-matroska")) or \
-           name.lower().endswith((".mp4", ".mov", ".mkv", ".avi", ".webm", ".ogg", ".oga", ".mp3", ".wav")):
-            return d["file_id"], name
+        mime = (d.get("mime_type") or guess_mime_from_name(name) or "")
+        if any(x in (mime or "").lower() for x in ("video", "audio", "ogg", "mpeg", "mp4", "x-matroska")) or \
+           name.lower().endswith((".mp4", ".mov", ".mkv", ".avi", ".webm", ".ogg", ".oga", ".mp3", ".wav", ".m4a")):
+            return d["file_id"], name, (mime or guess_mime_from_name(name) or "application/octet-stream")
+
+    # gif/animation (редко полезно)
     if "animation" in message:
         a = message["animation"]
-        return a["file_id"], a.get("file_name") or "input.mp4"
-    return None, None
+        name = a.get("file_name") or "input.mp4"
+        return a["file_id"], name, "video/mp4"
+
+    return None, None, None
 
 # --- Роуты ---
 
@@ -110,7 +148,6 @@ def webhook():
         return jsonify({"ok": False, "error": "invalid webhook secret"}), 401
 
     update = request.get_json(silent=True) or {}
-    # печать апдейта в логи
     try:
         print("[TG UPDATE]", json.dumps(update, ensure_ascii=False))
     except Exception:
@@ -131,7 +168,7 @@ def webhook():
         )
         return jsonify({"ok": True})
 
-    file_id, suggested_name = pick_media(message)
+    file_id, suggested_name, mime_hint = pick_media(message)
     if not file_id:
         tg_send_text(chat_id, "Пришлите видео/голос/аудио с диалогом.")
         return jsonify({"ok": True})
@@ -142,23 +179,28 @@ def webhook():
 
         # 2) скачиваем во временный файл
         with tempfile.TemporaryDirectory() as tmpd:
-            src_path = os.path.join(tmpd, os.path.basename(file_path) or suggested_name)
+            src_name = os.path.basename(file_path) or suggested_name or "input.bin"
+            src_path = os.path.join(tmpd, src_name)
             tg_download_by_path(file_path, src_path)
 
-            # 3) нормализуем в WAV 16kHz mono
-            wav_path = ensure_wav(src_path)
+            # финальный mime (сначала hint из сообщения, если нет — по имени)
+            mime_type = mime_hint or guess_mime_from_name(src_name) or "application/octet-stream"
 
-            # 4) распознаём (язык autodetect; можно подсказать 'ru'/'kk')
-            transcript = transcribe_audio(wav_path)
+            # 3) нормализуем в WAV 16kHz mono (ВАЖНО: передаём mime)
+            wav_path = ensure_wav(src_path, mime_type)
+
+            # 4) распознаём (язык autodetect; мягкий хинт по mime)
+            # если аудио ogg/m4a/mp3 — оставляем autodetect, модель сама поймёт ru/kk
+            transcript = transcribe_audio(wav_path, mime=mime_type)
 
         # 5) оцениваем
         score = evaluate_service(transcript)
 
         # 6) ответ пользователю
-        head = transcript[:350]
+        head = transcript[:350].strip()
         dots = "…" if len(transcript) > 350 else ""
         lines = [
-            "📝 Расшифровка (кратко): " + head + dots,
+            "📝 Расшифровка (кратко): " + (head or "<пусто>") + dots,
             "📊 Оценка:",
         ]
         for k, v in score.items():
@@ -180,7 +222,6 @@ def webhook():
 
 
 if __name__ == "__main__":
-    # локальный запуск (на Render всё запускается через gunicorn)
     app.run(host="0.0.0.0", port=PORT)
 
 
